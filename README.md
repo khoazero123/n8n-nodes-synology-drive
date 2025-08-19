@@ -21,7 +21,7 @@ Package name: `n8n-nodes-synology-drive`
 ## Credentials
 
 Use the credential type **Synology Drive API** and provide:
-- NAS URL (e.g. `https://192.168.1.100:5001`)
+- NAS URL (e.g. `https://192.168.1.100:5000`)
 - DSM username and password
 - Optionally allow self-signed certificates
 

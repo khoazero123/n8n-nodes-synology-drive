@@ -16,7 +16,7 @@ export class SynologyDriveApi implements ICredentialType {
 			name: 'baseUrl',
 			type: 'string',
 			default: '',
-			placeholder: 'https://192.168.1.100:5000',
+			placeholder: 'http://192.168.1.100:5000',
 			required: true,
 		},
 		{
