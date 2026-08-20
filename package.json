@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-synology-drive",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "n8n community node for interacting with Synology Drive",
   "keywords": [
     "n8n-community-node-package",

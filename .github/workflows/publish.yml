@@ -1,0 +1,83 @@
+# Publishes this n8n community node package to npm on every version tag push.
+#
+# Since 2026-05-01, n8n requires all community nodes to be published via
+# GitHub Actions with npm provenance statements. Provenance lets anyone
+# cryptographically verify that a package was built by this exact workflow,
+# from this exact repository and commit.
+
+name: Publish
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  ci:
+    name: Lint & Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Pack dry-run
+        run: npm pack --dry-run
+
+  publish:
+    name: Publish to npm
+    needs: ci
+    # npm publish --provenance only supports GitHub-hosted runners (E422 on self-hosted).
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 'lts/*'
+          cache: 'npm'
+
+      - name: Verify tag matches package version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [ "$TAG_VERSION" != "$PACKAGE_VERSION" ]; then
+            echo "Tag version v$TAG_VERSION does not match package.json version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Publish
+        # Option A (OIDC): leave NPM_TOKEN unset — npm uses the OIDC exchange.
+        # Option B (token): set NPM_TOKEN in repo secrets — written to .npmrc here.
+        run: |
+          [ -n "$NPM_TOKEN" ] && npm config set //registry.npmjs.org/:_authToken "$NPM_TOKEN"
+          npm run build
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$PACKAGE_VERSION" == *-* ]]; then
+            export NPM_CONFIG_TAG=next
+          fi
+          npm publish --provenance
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
