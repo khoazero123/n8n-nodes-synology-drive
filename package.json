@@ -53,5 +53,8 @@
   },
   "peerDependencies": {
     "n8n-workflow": "*"
+  },
+  "dependencies": {
+    "form-data": "^4.0.0"
   }
 }
