@@ -11,7 +11,7 @@ import type {
 	INodeTypeDescription,
 	IRequestOptions,
 } from 'n8n-workflow';
-import { ApplicationError, NodeConnectionType, NodeOperationError } from 'n8n-workflow';
+import { ApplicationError, NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 import FormData from 'form-data';
 import { generatePairedItemData } from './GenericFunctions';
 
@@ -94,8 +94,8 @@ export class SynologyDrive implements INodeType {
 		defaults: {
 			name: 'Synology Drive',
 		},
-		inputs: [NodeConnectionType.Main],
-		outputs: [NodeConnectionType.Main],
+		inputs: [NodeConnectionTypes.Main],
+		outputs: [NodeConnectionTypes.Main],
 		credentials: [
 			{
 				name: 'synologyDriveApi',
