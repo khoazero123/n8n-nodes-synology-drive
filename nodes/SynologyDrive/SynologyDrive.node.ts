@@ -15,6 +15,73 @@ import { ApplicationError, NodeConnectionType, NodeOperationError } from 'n8n-wo
 import FormData from 'form-data';
 import { generatePairedItemData } from './GenericFunctions';
 
+interface DriveSession {
+	sid: string;
+	deviceId: string;
+}
+
+interface DriveCredentials {
+	baseUrl?: string;
+	username?: string;
+	password?: string;
+	allowUnauthorizedCerts?: boolean;
+}
+
+const driveSessions = new Map<string, DriveSession>();
+
+async function driveLogin(
+	this: IExecuteSingleFunctions,
+	credentials: DriveCredentials,
+): Promise<DriveSession> {
+	const response = (await this.helpers.httpRequest({
+		method: 'POST',
+		url: `${String(credentials.baseUrl).replace(/\/$/, '')}/api/SynologyDrive/default/v1/login`,
+		headers: {
+			'Content-Type': 'application/json',
+			Accept: 'application/json',
+		},
+		body: {
+			format: 'sid',
+			account: credentials.username,
+			passwd: credentials.password,
+		},
+		json: true,
+		skipSslCertificateValidation: Boolean(credentials.allowUnauthorizedCerts ?? false),
+	})) as { success?: boolean; data?: { sid?: string; did?: string }; error?: { code?: number } };
+
+	if (!response.success || !response.data?.sid || !response.data.did) {
+		throw new NodeOperationError(
+			this.getNode(),
+			`Failed to login to Synology Drive (error ${response.error?.code ?? 0})`,
+		);
+	}
+
+	return { sid: response.data.sid, deviceId: response.data.did };
+}
+
+async function authenticateDriveRequest(
+	this: IExecuteSingleFunctions,
+	requestOptions: IHttpRequestOptions,
+): Promise<IHttpRequestOptions> {
+	const executionId = this.getExecutionId();
+	let session = driveSessions.get(executionId);
+	const credentials = await this.getCredentials<DriveCredentials>('synologyDriveApi');
+
+	if (!session) {
+		session = await driveLogin.call(this, credentials);
+		driveSessions.set(executionId, session);
+	}
+
+	requestOptions.headers = {
+		...requestOptions.headers,
+		Cookie: `id=${session.sid}; did=${session.deviceId};`,
+	};
+	requestOptions.skipSslCertificateValidation = Boolean(
+		credentials.allowUnauthorizedCerts ?? false,
+	);
+	return requestOptions;
+}
+
 export class SynologyDrive implements INodeType {
 	description: INodeTypeDescription = {
 		displayName: 'Synology Drive',
@@ -33,7 +100,7 @@ export class SynologyDrive implements INodeType {
 			{
 				name: 'synologyDriveApi',
 				required: true,
-			}
+			},
 		],
 		usableAsTool: true,
 		requestDefaults: {
@@ -82,6 +149,9 @@ export class SynologyDrive implements INodeType {
 						value: 'getFiles',
 						action: 'Get files',
 						routing: {
+							send: {
+								preSend: [authenticateDriveRequest],
+							},
 							request: {
 								method: 'POST',
 								url: '/api/SynologyDrive/default/v1/files/list',
@@ -94,7 +164,7 @@ export class SynologyDrive implements INodeType {
 								},
 								body: {
 									filter: '={{$parameter["filter"]}}', // object
-								}
+								},
 							},
 						},
 					},
@@ -103,6 +173,9 @@ export class SynologyDrive implements INodeType {
 						value: 'search',
 						action: 'Search',
 						routing: {
+							send: {
+								preSend: [authenticateDriveRequest],
+							},
 							request: {
 								method: 'POST',
 								url: '/api/SynologyDrive/default/v1/files/search',
@@ -114,7 +187,7 @@ export class SynologyDrive implements INodeType {
 								},
 								body: {
 									keyword: '={{$parameter["keyword"]}}', // object
-								}
+								},
 							},
 						},
 					},
@@ -123,6 +196,9 @@ export class SynologyDrive implements INodeType {
 						value: 'listItemsRecentlyUsed',
 						action: 'List items recently used',
 						routing: {
+							send: {
+								preSend: [authenticateDriveRequest],
+							},
 							request: {
 								method: 'GET',
 								url: '/api/SynologyDrive/default/v1/files/recent',
@@ -135,21 +211,27 @@ export class SynologyDrive implements INodeType {
 						action: 'Create file or folder',
 						routing: {
 							send: {
-								preSend: [async function (this: IExecuteSingleFunctions,
-									requestOptions: IHttpRequestOptions,
-								): Promise<IHttpRequestOptions> {
-									requestOptions.headers = {
-										...requestOptions.headers,
-									};
-									const type = this.getNodeParameter('createFileOrFolderType') as string;
-									if (type === 'file') {
-										const fileContent = this.getNodeParameter('createFileOrFolderFileContent') as string;
-										requestOptions.body = {
-											file_content: Buffer.from(fileContent).toString('base64'),
+								preSend: [
+									authenticateDriveRequest,
+									async function (
+										this: IExecuteSingleFunctions,
+										requestOptions: IHttpRequestOptions,
+									): Promise<IHttpRequestOptions> {
+										requestOptions.headers = {
+											...requestOptions.headers,
 										};
-									}
-									return requestOptions;
-								}],
+										const type = this.getNodeParameter('createFileOrFolderType') as string;
+										if (type === 'file') {
+											const fileContent = this.getNodeParameter(
+												'createFileOrFolderFileContent',
+											) as string;
+											requestOptions.body = {
+												file_content: Buffer.from(fileContent).toString('base64'),
+											};
+										}
+										return requestOptions;
+									},
+								],
 							},
 							request: {
 								method: 'POST',
@@ -160,7 +242,7 @@ export class SynologyDrive implements INodeType {
 								},
 								body: {
 									modified_time: new Date().getTime(),
-								}
+								},
 							},
 						},
 					},
@@ -170,48 +252,62 @@ export class SynologyDrive implements INodeType {
 						action: 'Upload',
 						routing: {
 							send: {
-								preSend: [async function (this: IExecuteSingleFunctions,
-									requestOptions: IHttpRequestOptions,
-								): Promise<IHttpRequestOptions> {
-									requestOptions.headers = {
-										...requestOptions.headers,
-									};
-									const body = new FormData();
+								preSend: [
+									authenticateDriveRequest,
+									async function (
+										this: IExecuteSingleFunctions,
+										requestOptions: IHttpRequestOptions,
+									): Promise<IHttpRequestOptions> {
+										requestOptions.headers = {
+											...requestOptions.headers,
+										};
+										const body = new FormData();
 
-									const binaryPropertyName = this.getNodeParameter('binaryPropertyName') as string;
-									if (!binaryPropertyName) {
-										throw new NodeOperationError(this.getNode(), 'Binary property name is required');
-									}
-									const binaryData = this.helpers.assertBinaryData(binaryPropertyName);
-									if (!binaryData) {
-										throw new NodeOperationError(this.getNode(), 'Binary data is required');
-									}
-									const fileName = binaryData.fileName?.toString();
-									if (!fileName) {
-										throw new NodeOperationError(this.getNode(), `File name is needed to upload image. Make sure the property that holds the binary data has the file name property set.`);
-									}
-									const binaryDataBuffer = await this.helpers.getBinaryDataBuffer(binaryPropertyName);
+										const binaryPropertyName = this.getNodeParameter(
+											'binaryPropertyName',
+										) as string;
+										if (!binaryPropertyName) {
+											throw new NodeOperationError(
+												this.getNode(),
+												'Binary property name is required',
+											);
+										}
+										const binaryData = this.helpers.assertBinaryData(binaryPropertyName);
+										if (!binaryData) {
+											throw new NodeOperationError(this.getNode(), 'Binary data is required');
+										}
+										const fileName = binaryData.fileName?.toString();
+										if (!fileName) {
+											throw new NodeOperationError(
+												this.getNode(),
+												`File name is needed to upload image. Make sure the property that holds the binary data has the file name property set.`,
+											);
+										}
+										const binaryDataBuffer =
+											await this.helpers.getBinaryDataBuffer(binaryPropertyName);
 
-									const filePath = this.getNodeParameter('path') as string;
-									const path = filePath.endsWith('/') ? filePath + fileName : filePath;
-									const conflictAction = this.getNodeParameter('uploadConflictAction') as string;
+										const filePath = this.getNodeParameter('path') as string;
+										const path = filePath.endsWith('/') ? filePath + fileName : filePath;
+										const conflictAction = this.getNodeParameter('uploadConflictAction') as string;
 
-									this.logger.debug(`Upload path: ${path}`);
+										this.logger.debug(`Upload path: ${path}`);
 
-									body.append('conflict_action', conflictAction);
-									body.append('path', path);
-									body.append('type', 'file');
-									body.append('file', binaryDataBuffer, {
-										filename: binaryData.fileName,
-										contentType: binaryData.mimeType,
-										knownLength: binaryDataBuffer.length,
-									});
-									requestOptions.body = body;
-									requestOptions.headers['Content-Length'] = body.getLengthSync();
-									requestOptions.headers['Content-Type'] = `multipart/related; boundary=${body.getBoundary()}`;
-									requestOptions.headers['Content-Type'] = 'multipart/form-data';
-									return requestOptions;
-								}],
+										body.append('conflict_action', conflictAction);
+										body.append('path', path);
+										body.append('type', 'file');
+										body.append('file', binaryDataBuffer, {
+											filename: binaryData.fileName,
+											contentType: binaryData.mimeType,
+											knownLength: binaryDataBuffer.length,
+										});
+										requestOptions.body = body;
+										requestOptions.headers['Content-Length'] = body.getLengthSync();
+										requestOptions.headers['Content-Type'] =
+											`multipart/related; boundary=${body.getBoundary()}`;
+										requestOptions.headers['Content-Type'] = 'multipart/form-data';
+										return requestOptions;
+									},
+								],
 							},
 							request: {
 								method: 'PUT',
@@ -224,13 +320,16 @@ export class SynologyDrive implements INodeType {
 						value: 'deleteFileOrFolder',
 						action: 'Delete file or folder',
 						routing: {
+							send: {
+								preSend: [authenticateDriveRequest],
+							},
 							request: {
 								method: 'POST',
 								url: '/api/SynologyDrive/default/v1/files/delete',
 								body: {
 									permanent: '={{$parameter["deleteFileOrFolderPermanent"]}}',
 									files: ['={{$parameter["path"]}}'],
-								}
+								},
 							},
 						},
 					},
@@ -240,26 +339,30 @@ export class SynologyDrive implements INodeType {
 						action: 'Download file',
 						routing: {
 							send: {
-								preSend: [async function (this: IExecuteSingleFunctions,
-									requestOptions: IHttpRequestOptions,
-								): Promise<IHttpRequestOptions> {
-									requestOptions.headers = {
-										...requestOptions.headers,
-										Accept: '*/*',
-									};
-									requestOptions.encoding = 'arraybuffer';
-									requestOptions.returnFullResponse = true;
-									const filePath = this.getNodeParameter('path') as string;
-									if (!filePath) {
-										throw new NodeOperationError(this.getNode(), 'File paths are required');
-									}
+								preSend: [
+									authenticateDriveRequest,
+									async function (
+										this: IExecuteSingleFunctions,
+										requestOptions: IHttpRequestOptions,
+									): Promise<IHttpRequestOptions> {
+										requestOptions.headers = {
+											...requestOptions.headers,
+											Accept: '*/*',
+										};
+										requestOptions.encoding = 'arraybuffer';
+										requestOptions.returnFullResponse = true;
+										const filePath = this.getNodeParameter('path') as string;
+										if (!filePath) {
+											throw new NodeOperationError(this.getNode(), 'File paths are required');
+										}
 
-									requestOptions.body = {
-										force_download: false, // to get correct mime type in response header
-										files: [filePath],
-									};
-									return requestOptions;
-								}],
+										requestOptions.body = {
+											force_download: false, // to get correct mime type in response header
+											files: [filePath],
+										};
+										return requestOptions;
+									},
+								],
 							},
 							request: {
 								method: 'POST',
@@ -267,7 +370,7 @@ export class SynologyDrive implements INodeType {
 								body: {
 									// archive_name: 'download',
 									files: ['={{$parameter["path"]}}'],
-								}
+								},
 							},
 							output: {
 								postReceive: [
@@ -280,7 +383,9 @@ export class SynologyDrive implements INodeType {
 										const headers = response.headers as Record<string, string>;
 										// this.logger.debug(`Download response headers: ${JSON.stringify(headers)}`);
 										const contentType = headers['content-type'] || 'application/octet-stream';
-										const binaryDataBuffer = await this.helpers.binaryToBuffer(response.body as Buffer | import('stream').Readable);
+										const binaryDataBuffer = await this.helpers.binaryToBuffer(
+											response.body as Buffer | import('stream').Readable,
+										);
 										let mimeType = contentType.split(';')[0]?.trim();
 										if (mimeType === 'application/json') {
 											const bodyString = binaryDataBuffer.toString('utf-8');
@@ -296,12 +401,17 @@ export class SynologyDrive implements INodeType {
 											];
 										}
 										const contentDisposition = headers['content-disposition'] || '';
-										const fileName = /filename="([^"]+)"/.exec(contentDisposition)?.[1] || 'download.zip';
+										const fileName =
+											/filename="([^"]+)"/.exec(contentDisposition)?.[1] || 'download.zip';
 										if (mimeType === 'application/octet-stream') {
 											mimeType = 'application/zip';
 										}
 
-										const binaryData = await this.helpers.prepareBinaryData(binaryDataBuffer, fileName, mimeType);
+										const binaryData = await this.helpers.prepareBinaryData(
+											binaryDataBuffer,
+											fileName,
+											mimeType,
+										);
 										return [
 											{
 												binary: {
@@ -311,7 +421,7 @@ export class SynologyDrive implements INodeType {
 												pairedItem: pairedItem,
 											},
 										];
-									}
+									},
 								],
 							},
 						},
@@ -329,11 +439,7 @@ export class SynologyDrive implements INodeType {
 				default: 50,
 				displayOptions: {
 					show: {
-						operation: [
-							'listItemsRecentlyUsed',
-							'getFiles',
-							'search',
-						],
+						operation: ['listItemsRecentlyUsed', 'getFiles', 'search'],
 						resource: ['file'],
 					},
 				},
@@ -346,9 +452,7 @@ export class SynologyDrive implements INodeType {
 				required: true,
 				displayOptions: {
 					show: {
-						operation: [
-							'createFileOrFolder',
-						],
+						operation: ['createFileOrFolder'],
 					},
 				},
 				options: [
@@ -372,10 +476,8 @@ export class SynologyDrive implements INodeType {
 				hint: 'Text content to be written to the file',
 				displayOptions: {
 					show: {
-						operation: [
-							'createFileOrFolder',
-						],
-						'createFileOrFolderType': ['file'],
+						operation: ['createFileOrFolder'],
+						createFileOrFolderType: ['file'],
 					},
 				},
 				default: '',
@@ -421,9 +523,7 @@ export class SynologyDrive implements INodeType {
 				type: 'boolean',
 				displayOptions: {
 					show: {
-						operation: [
-							'deleteFileOrFolder',
-						],
+						operation: ['deleteFileOrFolder'],
 					},
 				},
 				default: false,
@@ -439,9 +539,7 @@ export class SynologyDrive implements INodeType {
 				default: 'asc',
 				displayOptions: {
 					show: {
-						operation: [
-							'getFiles', 'search',
-						],
+						operation: ['getFiles', 'search'],
 					},
 				},
 			},
@@ -459,10 +557,7 @@ export class SynologyDrive implements INodeType {
 				default: 'modified_time',
 				displayOptions: {
 					show: {
-						operation: [
-							'getFiles',
-							'search',
-						],
+						operation: ['getFiles', 'search'],
 					},
 				},
 			},
@@ -473,9 +568,7 @@ export class SynologyDrive implements INodeType {
 				default: 0,
 				displayOptions: {
 					show: {
-						operation: [
-							'getFiles', 'search',
-						],
+						operation: ['getFiles', 'search'],
 					},
 				},
 			},
@@ -486,12 +579,11 @@ export class SynologyDrive implements INodeType {
 				default: {},
 				displayOptions: {
 					show: {
-						operation: [
-							'getFiles',
-						],
+						operation: ['getFiles'],
 					},
 				},
-				placeholder: '{"extensions": ["jpg", "png"], "types": ["file", "folder", "image"], "label_id": "mylabel", "starred": true}',
+				placeholder:
+					'{"extensions": ["jpg", "png"], "types": ["file", "folder", "image"], "label_id": "mylabel", "starred": true}',
 			},
 			{
 				displayName: 'Keyword',
@@ -500,9 +592,7 @@ export class SynologyDrive implements INodeType {
 				default: '',
 				displayOptions: {
 					show: {
-						operation: [
-							'search',
-						],
+						operation: ['search'],
 					},
 				},
 			},
@@ -534,9 +624,7 @@ export class SynologyDrive implements INodeType {
 				default: 'version',
 				displayOptions: {
 					show: {
-						operation: [
-							'upload',
-						],
+						operation: ['upload'],
 					},
 				},
 			},

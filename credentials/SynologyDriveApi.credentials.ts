@@ -1,5 +1,4 @@
-import type { IAuthenticateGeneric, ICredentialDataDecryptedObject, ICredentialTestRequest, ICredentialType, IHttpRequestHelper, IHttpRequestOptions, INodeProperties, Icon } from 'n8n-workflow';
-import { getMessageFromErrorCode } from '../nodes/SynologyDrive/GenericFunctions';
+import type { ICredentialType, INodeProperties, Icon } from 'n8n-workflow';
 
 export class SynologyDriveApi implements ICredentialType {
 	name = 'synologyDriveApi';
@@ -18,6 +17,8 @@ export class SynologyDriveApi implements ICredentialType {
 			default: '',
 			placeholder: 'http://192.168.1.100:5000',
 			required: true,
+			description:
+				'Base URL of DSM or the Synology Drive application portal, without a trailing slash',
 		},
 		{
 			displayName: 'Username',
@@ -44,99 +45,34 @@ export class SynologyDriveApi implements ICredentialType {
 			type: 'boolean',
 			default: true,
 		},
-		{
-			displayName: 'Session ID',
-			name: 'sid',
-			type: 'hidden',
-			default: '',
-			typeOptions: {
-				expirable: true,
-			},
-		},
-		{
-			displayName: 'Device ID',
-			name: 'deviceId',
-			type: 'hidden',
-			default: '',
-			typeOptions: {
-				expirable: true,
-			},
-		}
 	];
 
-	async preAuthentication(this: IHttpRequestHelper, credentials: ICredentialDataDecryptedObject) {
-		const url = `${credentials.baseUrl}/api/SynologyDrive/default/v1/login`;
-
-		const requestOptions: IHttpRequestOptions = {
-			url,
-			method: 'POST',
+	test = {
+		request: {
+			baseURL: '={{$credentials.baseUrl}}',
+			url: '/api/SynologyDrive/default/v1/login',
+			method: 'POST' as const,
 			headers: {
 				'Content-Type': 'application/json',
-				'Accept': 'application/json',
+				Accept: 'application/json',
+			},
+			body: {
+				format: 'sid',
+				account: '={{$credentials.username}}',
+				passwd: '={{$credentials.password}}',
 			},
 			json: true,
-			skipSslCertificateValidation: credentials.allowUnauthorizedCerts as boolean,
-			body: {
-				format: 'sid',
-				account: credentials.username,
-				passwd: credentials.password,
-			},
-		};
-
-		const res = (await this.helpers.httpRequest(requestOptions)) as {
-			success: boolean;
-			data: {
-				did: string;
-				sid: string;
-			};
-			error?: {
-				code: number;
-			};
-		};
-
-		const { success, data, error } = res;
-
-		if (!success) {
-			const message = getMessageFromErrorCode(error?.code || 0);
-			throw new Error('Failed to login: ' + message);
-		}
-
-		return { sid: data.sid, deviceId: data.did };
-	}
-
-	authenticate: IAuthenticateGeneric = {
-		type: 'generic',
-		properties: {
-			headers: {
-				'Cookie': '=id={{$credentials.sid}};',
-			},
+			skipSslCertificateValidation: '={{$credentials.allowUnauthorizedCerts}}',
 		},
+		rules: [
+			{
+				type: 'responseSuccessBody' as const,
+				properties: {
+					key: 'success',
+					value: true,
+					message: 'Login failed: check the NAS URL, username, and password',
+				},
+			},
+		],
 	};
-
-	/* test: ICredentialTestRequest = {
-		request: {
-			url: '={{$credentials.baseUrl}}/api/SynologyDrive/default/v1/files/recent',
-			method: 'GET',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json',
-				'Cookie': 'id={{$credentials.sid}}; did={{$credentials.deviceId}};',
-			},
-		},
-	}; */
-	/* test: ICredentialTestRequest = {
-		request: {
-			url: '={{$credentials.baseUrl}}/api/SynologyDrive/default/v1/login',
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Accept': 'application/json',
-			},
-			body: {
-				format: 'sid',
-				username: '={{$credentials.username}}',
-				password: '={{$credentials.password}}',
-			},
-		},
-	}; */
 }
